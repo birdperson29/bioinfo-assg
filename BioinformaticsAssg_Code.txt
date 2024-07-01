@@ -1,0 +1,248 @@
+# WORKING IN RSTUDIO
+
+# after removing duplicate rows from the data and using double \ to escape \
+
+##Prelim Analysis
+
+data = read.delim("C:\\Users\\sejal\\Downloads\\Cleaned_GSE263546_ras_mm10_raw_count_expressions.csv", header=TRUE, row.names=1, sep = ",")
+
+head(data)
+
+#DESeq2 requires multiple samples per condition to estimate within-group variability (biological replicates as indicated by the original column names in the dataset)
+
+bin <- factor(c("ctrl", "ctrl", "ctrl", "icKO", "cKO", "icKO"))
+
+coldata <- data.frame(row.names = colnames(data), bin)
+library("DESeq2")
+
+dds <- DESeqDataSetFromMatrix(countData = data, colData = coldata, design=~bin)
+
+#there was an error due to null values 
+
+total_na_values <- sum(is.na(data))
+print(total_na_values)
+
+na_values_per_column <- colSums(is.na(data))
+print(na_values_per_column)
+
+cleaned_data <- na.omit(data)
+
+dds <- DESeqDataSetFromMatrix(countData = cleaned_data, colData = coldata, design=~bin)
+
+#regularised log transform
+rld <- rlog(dds, blind=FALSE)
+
+library("ggplot2")
+
+head(assay(rld),3)
+lims <- c(-2, 20)
+
+plot(assay(rld)[,1:2], pch=16, cex=0.3, main="rlog", xlim=lims, ylim=lims)
+
+install.packages("pheatmap")
+install.packages("RColorBrewer")
+
+library("pheatmap")
+library("RColorBrewer")
+
+
+sampleDists <- dist(t(assay(rld)))
+sampleDistMatrix <- as.matrix( sampleDists )
+rownames(sampleDistMatrix) <- paste( rld$bin, rld$Sample, sep="-" )
+colnames(sampleDistMatrix) <- NULL
+colors <- colorRampPalette( rev(brewer.pal(9, "Greens")) )(255)
+
+pheatmap(sampleDistMatrix, clustering_distance_rows=sampleDists, clustering_distance_cols=sampleDists, col=colors)
+
+library("PoiClaClu")
+
+poisd <- PoissonDistance(t(counts(dds)))
+samplePoisDistMatrix <- as.matrix( poisd$dd )
+rownames(samplePoisDistMatrix) <- paste( rld$bin, rld$Sample, sep="-" )
+colnames(samplePoisDistMatrix) <- NULL
+
+
+pheatmap(samplePoisDistMatrix, clustering_distance_rows=poisd$dd, clustering_distance_cols=poisd$dd, col=colors)
+
+plotPCA(rld, intgroup = c("bin"))
+
+pcaData <- plotPCA(rld, intgroup = c("bin"), returnData=TRUE)
+
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+
+ggplot(pcaData, aes(PC1, PC2, color=bin, shape=bin)) + geom_point(size=3) + xlab(paste0("PC1: ",percentVar[1],"% variance")) + ylab(paste0("PC2: ",percentVar[2],"% variance")) +
+  coord_fixed()
+
+
+##Normalisation with RUVSeq 
+
+BiocManager::install("RUVSeq")
+#Ercc are control genes
+whdata = read.delim("C:\\Users\\sejal\\Downloads\\Cleaned_GSE263546_ras_mm10_raw_count_expressions.csv", header=TRUE, row.names=1, sep = ",")
+summary(whdata)
+spikes <- rownames(whdata)[grep("Ercc", rownames(whdata))]
+whdata <- na.omit(whdata)
+
+x <- factor(c("ctrl", "ctrl", "ctrl", "icKO", "cKO", "icKO"))
+
+library("RUVSeq")
+
+set <- newSeqExpressionSet(as.matrix(whdata),phenoData = data.frame(x, row.names=colnames(whdata)))
+
+set1 <- RUVg(set, spikes, k=1)
+pData(set1)
+colors=c(rep("red",4),rep("blue",4),rep("green",4),rep("chocolate",4))
+
+plotRLE(set1, outline=FALSE,col=colors)
+
+plotPCA(set1, col=colors, cex=1.2, intgroup ="x")
+
+dds <- DESeqDataSetFromMatrix(countData = normCounts(set1), colData = pData(set1), design = ~W_1 + x)
+
+
+prdds <- DESeq(dds)
+res <- results(prdds)
+sampleDists <- dist(t(assay(dds)))
+sampleDistMatrix <- as.matrix( sampleDists )
+
+rownames(sampleDistMatrix) <- paste( dds$x, colnames(dds), sep="-" )
+colnames(sampleDistMatrix) <- NULL
+
+colors <- colorRampPalette( rev(brewer.pal(9, "PuBuGn")) )(255)
+pheatmap(sampleDistMatrix, clustering_distance_rows=sampleDists, clustering_distance_cols=sampleDists, col=colors)
+
+## DE Analysis with edgeR
+
+library(edgeR)
+
+design <- model.matrix(~x + W_1, data=pData(set1))
+y <- DGEList(counts=counts(set1), group=x)
+y <- calcNormFactors(y, method="upperquartile")
+y <- estimateGLMCommonDisp(y, design)
+y <- estimateGLMTagwiseDisp(y, design)
+fit <- glmFit(y, design)
+lrt <- glmLRT(fit, coef=2)
+topTags(lrt)
+
+
+
+rld <- rlog(dds, blind=FALSE)
+head(assay(rld),3)
+vsd <- varianceStabilizingTransformation(dds, blind=FALSE)
+
+par(mfrow=c(1, 3))
+mks <- estimateSizeFactors(dds)
+lims <- c(-2, 20)
+plot(log2(counts(mks, normalized=TRUE)[,1:2] + 1),pch=16, cex=0.3, main="log2(x + 1)", xlim=lims, ylim=lims)
+plot(assay(rld)[,1:2], pch=16, cex=0.3, main="rlog", xlim=lims, ylim=lims)
+plot(assay(vsd)[,1:2], pch=16, cex=0.3, main="VST", xlim=lims, ylim=lims)
+
+sampleDists <- dist(t(assay(rld)))
+sampleDists
+
+library("pheatmap")
+library("RColorBrewer")
+
+sampleDistMatrix <- as.matrix( sampleDists )
+rownames(sampleDistMatrix) <- paste( rld$bin, rld$Sample, sep="-" )
+colnames(sampleDistMatrix) <- NULL
+
+colors <- colorRampPalette( rev(brewer.pal(8, "GnBu")) )(255)
+pheatmap(samplePoisDistMatrix, clustering_distance_rows=poisd$dd, clustering_distance_cols=poisd$dd, col=colors)
+
+## Differential expression 
+
+prdds <- DESeq(dds)
+
+res <- results(prdds)
+res
+
+mcols(res, use.names=TRUE)
+
+summary(res)
+
+res.05 <- results(prdds, alpha=.05)
+table(res.05$padj < .05)
+
+resLFC1 <- results(prdds, lfcThreshold=1)
+table(resLFC1$padj < 0.1)
+
+results(prdds, contrast=c("Sample", "RD1", "RD2"))
+
+
+sum(res$pvalue < 0.05, na.rm=TRUE)
+sum(!is.na(res$pvalue))
+
+sum(res$padj < 0.1, na.rm=TRUE)
+
+resSig <- subset(res, padj < 0.1)
+resSig2 <- subset(resLFC1, padj < 0.1)
+## resSig2 <- subset(res, abs(log2FoldChange)>0.5 & padj < 0.1)
+
+sort=resSig[ order(resSig$log2FoldChange, decreasing=TRUE), ]
+sort2=resSig2[ order(resSig2$log2FoldChange, decreasing=TRUE), ]
+
+head(resSig[ order(resSig$log2FoldChange), ])
+head(resSig[ order(resSig$log2FoldChange, decreasing=TRUE), ])
+
+topGene <- rownames(res)[which.min(res$padj)]
+
+ggplot(geneCounts, aes(x=x, y=count, color=x)) + scale_y_log10() + geom_point(position=position_jitter(width=.1,height=0), size=3)
+
+plotMA(res, ylim=c(-5,5))
+
+plotMA(resLFC1, ylim=c(-5,5))
+topGene <- rownames(resLFC1)[which.min(resLFC1$padj)]
+
+with(resLFC1[topGene, ], {
+  points(baseMean, log2FoldChange, col="dodgerblue", cex=2, lwd=2)
+  text(baseMean, log2FoldChange, topGene, pos=2, col="dodgerblue")
+})
+
+
+hist(res$pvalue[res$baseMean > 1], breaks=0:20/20, col="grey50", border="white")
+
+## Dispersion plot 
+dds <- DESeq(dds, betaPrior=T, fitType="mean")
+
+plotDispEsts(dds)
+
+res <- res[!is.na(res$pvalue), ] 
+
+## Volcano plot 
+
+res$significant <- "Not significant"
+
+res$significant[res$pvalue < 0.1 & res$log2FoldChange > 0.8] <- "Upregulated"
+res$significant[res$pvalue < 0.1 & res$log2FoldChange < -0.8] <- "Downregulated"
+
+ggplot(res, aes(x=log2FoldChange, y=-log10(pvalue), color=significant)) +
++     geom_point(alpha=0.4) +  
++     scale_color_manual(values=c("red", "grey", "blue")) +  
++     labs(title="Volcano Plot", x="Log2 Fold Change", y="-Log10 P-value") +
++     theme_minimal() +
++     theme(legend.title=element_blank())
+
+
+
+##Heatmap 
+
+topVarGenes <- head(order(rowVars(assay(rld)),decreasing=TRUE),20)
+mat <- assay(rld)[ topVarGenes, ]
+mat <- mat - rowMeans(mat)
+df <- as.data.frame(colData(rld)[,"x"])
+rownames(df) <- colnames(mat)
+
+# Due to error 
+if(length(res$pvalue) != nrow(mat)) {
++     stop("Mismatch in number of genes in res and rows in mat.")
++ }
+
+common_genes <- intersect(rownames(res), rownames(mat))
+res_filtered <- res[rownames(res) %in% common_genes, ]
+
+pheatmap(mat, annotation_col = df, 
++          cellwidth = 35, cellheight = 15, 
++          fontsize = 6, 
++          fontsize_row = 10, fontsize_col = 5, 
++          main = "Heatmap Title")
